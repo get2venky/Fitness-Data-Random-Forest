@@ -1,0 +1,216 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Venkatesh Vedam"
+date: "February 01, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE,message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Problem Statement
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self-movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+In this project, the aim is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+The goal of this project is to predict the manner in which the participants  did the exercise. This is the "classe" variable in the training set. Any of the other variables may be used for prediction.
+
+## Data Sets
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+
+```{r libs, include = FALSE, message=FALSE, warning=FALSE}
+library(caret)
+library(rpart)
+library(randomForest)
+library(gbm)
+setwd('D:/DS/CoursEra/Practical Machine Learning')
+```
+Load the training data set and ensure that blanks and preexisting "NA" values in the data
+are converted to 'NA' as understood by R.
+```{r dataload}
+pmltrn <- read.csv("pml-training.csv",sep=",",na.strings = c("","NA"),header = TRUE,stringsAsFactors = FALSE)
+nrow(pmltrn)
+str(pmltrn,list.len=20)
+```
+
+## Preprocessing / Partitioning
+Remove all columns where there is zero variance, as such columns will not add any value
+```{r preproc1}
+zerov <- nearZeroVar(pmltrn)
+pmltrn <- pmltrn[,-zerov]
+dim(pmltrn)
+```
+Remove columns 1 to 6 as they contain variables which do not make sense for prediction
+```{r preproc2}
+pmltrn <- pmltrn[, -(1:6)]
+dim(pmltrn)
+```
+Remove columns where NAs constitue more than 25% of the rows and also convert the classe variable
+to factor
+```{r preproc3}
+pmltrn <- pmltrn[,colSums(is.na(pmltrn))< 0.25*nrow(pmltrn)]
+pmltrn$classe <- as.factor(pmltrn$classe)
+dim(pmltrn)
+```
+Sub-Partition the training data set into 75% training and 25% validation
+```{r preproc4}
+inTrain <- createDataPartition(pmltrn$classe, p=0.75, list=FALSE)
+pmltrntrn<- pmltrn[inTrain, ]
+dim(pmltrntrn)
+pmltrnval <- pmltrn[-inTrain, ]
+dim(pmltrnval)
+```
+
+## Model Creation Options 
+Define control for k-fold cross validation with k=7
+```{r modeloptions}
+control1 <- trainControl(method="cv", number=7) # 
+```
+Model#1 - Simple CART (Classification and Regression Trees)
+```{r modeloptions1}
+timestart <- proc.time()
+pmlcart <- train(classe ~ ., 
+                 data = pmltrntrn, 
+                 trControl = control1, 
+                 method = "rpart") 
+timecart <- proc.time() - timestart
+```
+Model # 2 - CART with Bagging
+```{r modeloptions2, warning=FALSE}
+timestart <- proc.time()
+pmlbag <- train(classe ~ ., data = pmltrntrn, trControl = control1, method="treebag")
+timebag <- proc.time() - timestart
+```
+Model # 3 - CART with Boosting
+```{r modeloptions3}
+timestart <- proc.time()
+pmlboost <- train(classe ~ .,data = pmltrntrn, trControl = control1,method = "gbm",verbose=FALSE)
+timeboost <- proc.time() - timestart
+```
+
+Model # 4 - Random Forest
+```{r modeloptions4}
+timestart <- proc.time()
+pmlrf <- randomForest(classe ~ ., data = pmltrntrn,na.action = na.omit,ntree=25)
+timerf <- proc.time() - timestart
+```
+
+## Finalizing the Model
+Predict with the validation set for each of the 4 models developed above and create the confusion matrices
+```{r finalmodel}
+predcart <- predict(pmlcart,newdata=pmltrnval)
+predbag <- predict(pmlbag,newdata=pmltrnval)
+predboost <- predict(pmlboost,newdata=pmltrnval)
+predrf <- predict(pmlrf,newdata=pmltrnval)
+
+cfcart <- confusionMatrix(predcart,pmltrnval$classe)
+cfbag <- confusionMatrix(predbag,pmltrnval$classe)
+cfboost <- confusionMatrix(predboost,pmltrnval$classe)
+cfrf <- confusionMatrix(predrf,pmltrnval$classe)
+```
+Compare the 4 models for accuracy and time taken
+```{r finalmodel2}
+pmlresult <- data.frame(Model = c('CART','BAG','BOOST','RF'), 
+                      Accuracy=rbind(cfcart$overall[1],cfbag$overall[1],cfboost$overall[1],cfrf$overall[1]),
+                      Elapsed= rbind(timecart[[3]],timebag[[3]],timeboost[[3]], timerf[[3]]))
+print(pmlresult)
+```
+
+RandomForest is the most accurate and is also efficient in terms of time taken. 
+Hence we will choose pmlrf as our final model.
+Taking a closer look at the confusion matrix for the RF model:
+
+```{r finalmodel3}
+print(cfrf)
+```
+All the variables ranked by mean-decrease-gini descending
+```{r gini, message=FALSE, warning=FALSE}
+imp = data.frame(importance(pmlrf,type = 2))
+imp=data.frame(param = row.names(imp),gini=(imp$MeanDecreaseGini))
+imp<-imp[order(-imp$gini),]
+row.names(imp)<-c(1:nrow(imp))
+imp
+```
+
+
+```{r randomforest, echo=FALSE}
+varImpPlot(pmlrf, main="Random Forest Var Importance")
+
+```
+
+
+Checking if any of the top 20 (by importance as above) variables are correlated more than 80%
+```{r correl}
+corpml <- abs(cor(pmltrntrn[,c("roll_belt","yaw_belt","magnet_dumbbell_z","roll_forearm", "pitch_forearm",
+                               "magnet_dumbbell_y", "pitch_belt", "magnet_dumbbell_x",
+                               "accel_dumbbell_y", "roll_dumbbell", "magnet_belt_z", "accel_forearm_x",
+                               "gyros_belt_z", "magnet_belt_y", "accel_belt_z", "accel_dumbbell_z",
+                               "magnet_forearm_z", "roll_arm", "yaw_dumbbell", "total_accel_dumbbell")]))
+
+diag(corpml) <- 0 # since every variable has a correlation of 1 with itself, depicted along the diag
+which(corpml > 0.8,arr.ind=T) 
+```
+yaw_belt and accel_belt_z both have a high correlation (>0.8) with roll_belt.
+Since roll_best is the most important variable, we will drop yaw_belt and accel_belt_z.
+Similary we will drop yaw_dumbbell(correlated with accel_dumbbell_z). 
+So we will recreate the final randomforest model with 17 variables.
+
+```{r randomforest2}
+set.seed(731209)
+pmlrf <- randomForest(classe ~ roll_belt+magnet_dumbbell_z+roll_forearm+ pitch_forearm+
+                               magnet_dumbbell_y+ pitch_belt+ magnet_dumbbell_x+
+                               accel_dumbbell_y+ roll_dumbbell+ magnet_belt_z+ accel_forearm_x+
+                               gyros_belt_z+ magnet_belt_y+accel_dumbbell_z+
+                               magnet_forearm_z+ roll_arm+total_accel_dumbbell,
+                      data = pmltrntrn,
+                      na.action = na.omit,
+                      ntree=25)
+
+```
+
+Rerunnng the tuned model (with 17 variables) on the validation data set
+```{r randomforest3}
+predrf <- predict(pmlrf,newdata=pmltrnval)
+cfrf <- confusionMatrix(predrf,pmltrnval$classe)
+cfrf$overall[1]
+```
+
+## Out of Sample Error
+The Out of Sampe Error Rate (percentage) can now be estimated as below:
+```{r oos}
+oos <- round(100*(1-cfrf$overall[1]),3)
+names(oos) <- "OOS Error%"
+oos
+```
+
+
+## Running on Testing Set
+Load the test data and run use the RandomForest model above to predict the value for classe variable
+```{r testdataset}
+pmltest <- read.csv("pml-testing.csv",sep=",",na.strings = c("","NA"),header = TRUE,stringsAsFactors = FALSE)
+dim(pmltest)
+predrftest <- predict(pmlrf,newdata=pmltest)
+output <- data.frame(problem_id = pmltest$problem_id,prediction=predrftest)
+summary(output$prediction)
+```
+
+## Summary
+We started off with the given data set for personal activity. After loading from training data
+from csv we removed columns that a) had zero variance, b) that did not seem to make sense for prediction (1:6), c) had more than 25% of the values as NA. This brought down the no of columns from 160 at the time
+of loading to 53 (inlcuding the classe variable). We proceeded with partitioning the training data into 75%
+training and 25% validation. Next we built 4 different models on the training data: CART, CART(Bag), CART(Boost), RandomForest. Except for RandomForest, we used k-fold cross validation for the other 3 models with k=7, since randomforest is sufficiently cross-validated by default. After comparing the 4 models thus 
+built for speed and accuracy, we chose randomforest as the final model. Examining the top 20 features wrt 
+meanginidecrease, we further checked for collinearity which resulted in dropping another 3 features. So 
+we used 17 features and built the final model. This yielded a final accuracy of about 995% on the validation set, corresponding to an OOB error rate of about 1%. The accuracy seems to be unnaturally high for a real-life data set. Overall, this was a great learning experience!
+
+
